@@ -23,10 +23,23 @@ function isAdmin(req, env) {
   return Boolean(pw) && req.headers.get("x-admin-password") === pw;
 }
 
+// 舊版存的品項沒有 grams 欄位：從預設品項或名稱裡的「（75g）」補上，並把名稱裡的克數拿掉。
+const GRAM_SUFFIX = /（(\d+(?:\.\d+)?)g）$/;
+function upgradeItem(it) {
+  if (it.grams !== undefined || it.floating) return it;
+  const d = DEFAULT_ITEMS.find((x) => x.id === it.id);
+  const m = GRAM_SUFFIX.exec(it.name || "");
+  const grams = (d && d.grams) || (m ? Number(m[1]) : null);
+  if (!grams) return { ...it, grams: null };
+  return { ...it, grams, name: (it.name || "").replace(GRAM_SUFFIX, "") || it.name };
+}
+
 async function readItems(store) {
   const items = await store.get(ITEMS_KEY, { type: "json" });
-  return Array.isArray(items) ? items : DEFAULT_ITEMS;
+  return Array.isArray(items) ? items.map(upgradeItem) : DEFAULT_ITEMS;
 }
+
+const isWeighed = (it) => !it.floating && Number(it.grams) > 0;
 
 function cleanItem(raw, i) {
   const name = clip(raw.name, 40);
@@ -38,6 +51,7 @@ function cleanItem(raw, i) {
     unit: clip(raw.unit, 10) || "份",
     price: raw.floating ? null : toNum(raw.price),
     floating: Boolean(raw.floating),
+    grams: raw.floating ? null : (toNum(raw.grams) || null),
     active: raw.active !== false,
     order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : i + 1,
     note: clip(raw.note, 80) || undefined,
@@ -117,12 +131,16 @@ export async function handle(req, store, env = {}) {
       if (!by) return fail(400, "請填記錄人");
       // 固定價品項一律用後台單價；浮動價（蔬菜）用記錄時輸入的每斤價格
       const price = item.floating ? toNum(b.price) : (item.price ?? toNum(b.price));
+      // 秤重品項：qty 是秤到的克數，金額 = 克數 ÷ 每份克數 × 每份成本
+      const weighed = isWeighed(item);
+      const portions = weighed ? qty / Number(item.grams) : qty;
       const rec = {
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
         date,
         period: b.period === "下午" ? "下午" : "上午",
-        itemId: item.id, name: item.name, cat: item.cat, unit: item.unit,
-        qty: round2(qty), price, amount: price == null ? null : round2(qty * price),
+        itemId: item.id, name: item.name, cat: item.cat, unit: weighed ? "g" : item.unit,
+        ...(weighed ? { portionG: Number(item.grams) } : {}),
+        qty: round2(qty), price, amount: price == null ? null : round2(portions * price),
         reason: REASONS.includes(b.reason) ? b.reason : "其他",
         note: clip(b.note, 60), by, createdAt: Date.now(),
       };

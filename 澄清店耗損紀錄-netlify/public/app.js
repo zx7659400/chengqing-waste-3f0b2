@@ -66,9 +66,13 @@
   $("qtyMinus").addEventListener("click", () => { const q = num($("qty").value) || 0; $("qty").value = fmtQty(Math.max(0, q - stepFor())); renderForm(); });
   $("qtyPlus").addEventListener("click", () => { const q = num($("qty").value) || 0; $("qty").value = fmtQty(q + stepFor()); renderForm(); });
   ["qty", "price"].forEach((id) => $(id).addEventListener("input", renderForm));
-  function stepFor() { const it = selItem(); return it && it.unit === "斤" ? 0.5 : 1; }
+  function stepFor() { const it = selItem(); return !it ? 1 : weighed(it) ? 10 : it.unit === "斤" ? 0.5 : 1; }
 
   /* ---------- helpers ---------- */
+  // 秤重品項：有每份克數，記錄時輸入秤到的克數
+  function weighed(it) { return !!it && !it.floating && Number(it.grams) > 0; }
+  function calcAmount(it, q, p) { if (q == null || p == null) return null; return weighed(it) ? (q / Number(it.grams)) * p : q * p; }
+  function priceText(it) { return money(it.price) + "／" + (weighed(it) ? it.grams + "g" : it.unit); }
   function activeItems() { return S.items.filter((i) => i.active !== false); }
   function selItem() { return S.items.find((i) => i.id === S.sel) || null; }
   function monthLogs(m) { return S.logsByMonth[m] || []; }
@@ -98,7 +102,7 @@
         const p = document.createElement("span"); p.className = "p";
         if (it.floating) p.textContent = "填每" + it.unit + "價格";
         else if (it.price == null) { p.textContent = "未設單價"; p.classList.add("missing"); }
-        else p.textContent = money(it.price) + "／" + it.unit;
+        else p.textContent = priceText(it) + (weighed(it) ? "・秤重" : "");
         b.append(n, p);
         b.addEventListener("click", () => selectItem(it.id));
         g.appendChild(b);
@@ -108,7 +112,7 @@
   }
   function selectItem(id) {
     S.sel = id; const it = selItem();
-    $("qty").value = "1";
+    $("qty").value = weighed(it) ? "" : "1";
     if (it.floating) { const lp = lastPrice(it.id); $("price").value = lp != null ? lp : ""; }
     else $("price").value = it.price != null ? it.price : "";
     $("note").value = "";
@@ -117,16 +121,19 @@
   }
   function renderForm() {
     const it = selItem(); $("entryCard").hidden = !it; if (!it) return;
-    $("selName").textContent = it.name; $("selUnit").textContent = it.unit;
+    const w = weighed(it);
+    $("selName").textContent = it.name; $("selUnit").textContent = w ? "g" : it.unit;
+    $("qtyLabel").textContent = w ? "秤到的重量" : "數量"; $("qty").step = String(stepFor()); $("qty").placeholder = w ? "例如 120" : "";
     const fixed = !it.floating && it.price != null;
     $("price").readOnly = fixed;
-    $("priceLabel").textContent = it.floating ? "今天每" + it.unit + "價格（元）" : fixed ? "單價（固定成本）" : "單價（尚未設定，可先填）";
-    $("selHint").textContent = it.floating ? "菜價浮動，填今天的進價" : fixed ? "" : "請主管到「品項」補單價";
+    $("priceLabel").textContent = it.floating ? "今天每" + it.unit + "價格（元）" : w ? "每份成本（" + it.grams + "g）" : fixed ? "單價（固定成本）" : "單價（尚未設定，可先填）";
+    $("selHint").textContent = it.floating ? "菜價浮動，填今天的進價" : w ? "秤重後輸入克數" : fixed ? "" : "請主管到「品項」補單價";
     document.querySelectorAll("#reasonChips .chip").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.r === S.reason)));
     const q = num($("qty").value), p = num($("price").value);
-    $("amountPreview").textContent = q != null && p != null ? money(q * p) : "—";
+    const amt = calcAmount(it, q, p);
+    $("amountPreview").textContent = amt != null ? money(amt) + (w && q ? "（約 " + fmtQty(q / Number(it.grams)) + " 份）" : "") : "—";
     const by = $("byName").value.trim();
-    const warn = !by ? "請先填記錄人。" : (q == null || q <= 0) ? "數量要大於 0。" : (it.floating && p == null) ? "請填今天每" + it.unit + "的價格，才能算出耗損金額。" : (p == null ? "還沒有單價，這筆會先記數量，金額之後補。" : "");
+    const warn = !by ? "請先填記錄人。" : (q == null || q <= 0) ? (w ? "請輸入秤到的克數。" : "數量要大於 0。") : (it.floating && p == null) ? "請填今天每" + it.unit + "的價格，才能算出耗損金額。" : (p == null ? "還沒有單價，這筆會先記數量，金額之後補。" : "");
     $("formWarn").hidden = !warn; $("formWarn").textContent = warn;
     $("submitBtn").disabled = S.busy || !by || q == null || q <= 0;
   }
@@ -162,7 +169,7 @@
         if (l.amount == null) { a.textContent = "未設單價"; a.classList.add("missing"); } else a.textContent = money(l.amount);
         const m2 = document.createElement("div"); m2.className = "m";
         const tm = new Date(l.createdAt || 0);
-        m2.textContent = l.reason + (l.note ? "｜" + l.note : "") + (l.price != null && l.unit === "斤" ? "｜每斤 " + money(l.price) : "") + "｜" + l.by + " " + pad(tm.getHours()) + ":" + pad(tm.getMinutes());
+        m2.textContent = l.reason + (l.note ? "｜" + l.note : "") + (l.price != null && l.unit === "斤" ? "｜每斤 " + money(l.price) : "") + (l.portionG ? "｜約 " + fmtQty(l.qty / l.portionG) + " 份" : "") + "｜" + l.by + " " + pad(tm.getHours()) + ":" + pad(tm.getMinutes());
         const del = document.createElement("button"); del.type = "button"; del.className = "del";
         const pending = S.pendingDelete === l.id;
         del.textContent = pending ? "確定刪除？" : "刪除"; if (pending) del.classList.add("confirm");
@@ -266,7 +273,7 @@
       left.append(nm, cat);
       if (it.floating) { const f = document.createElement("span"); f.className = "pill float"; f.textContent = "浮動價"; left.appendChild(f); }
       const pr = document.createElement("div"); pr.className = "small";
-      pr.textContent = it.floating ? "記錄時填每" + it.unit + "價格" : it.price == null ? "未設單價／" + it.unit : money(it.price) + "／" + it.unit;
+      pr.textContent = it.floating ? "記錄時填每" + it.unit + "價格" : it.price == null ? "未設單價／" + it.unit : priceText(it) + (weighed(it) ? "（秤重：輸入克數換算）" : "");
       left.appendChild(pr);
       row.appendChild(left);
       if (S.isAdmin) {
@@ -283,7 +290,8 @@
     const mk = (labelTxt, id, type, val) => { const w = document.createElement("div"); w.className = "field"; const l = document.createElement("label"); l.htmlFor = id; l.textContent = labelTxt; const i = document.createElement("input"); i.type = type; i.id = id; i.value = val == null ? "" : val; if (type === "number") { i.inputMode = "decimal"; i.min = "0"; i.step = "0.1"; } w.append(l, i); return [w, i]; };
     const [wn, iN] = mk("名稱", "e-name-" + it.id, "text", it.name);
     const [wu, iU] = mk("單位", "e-unit-" + it.id, "text", it.unit);
-    const [wp, iP] = mk("單價（元）", "e-price-" + it.id, "number", it.price);
+    const [wp, iP] = mk("每份成本（元）", "e-price-" + it.id, "number", it.price);
+    const [wg, iG] = mk("每份克數（秤重品項才填）", "e-grams-" + it.id, "number", it.grams);
     const wc = document.createElement("div"); wc.className = "field";
     const lc = document.createElement("label"); lc.htmlFor = "e-cat-" + it.id; lc.textContent = "分類";
     const sc = document.createElement("select"); sc.id = "e-cat-" + it.id; fillCatSelect(sc, it.cat);
@@ -293,10 +301,10 @@
     const save = document.createElement("button"); save.type = "button"; save.className = "primary full"; save.textContent = "儲存";
     save.addEventListener("click", () => {
       const name = iN.value.trim(); if (!name) { toast("名稱不能空白"); return; }
-      const items = S.items.map((x) => x.id === it.id ? { ...x, name, unit: iU.value.trim() || "份", price: num(iP.value), cat: sc.value, floating: cf.checked, active: ca.checked } : x);
+      const items = S.items.map((x) => x.id === it.id ? { ...x, name, unit: iU.value.trim() || "份", price: num(iP.value), grams: cf.checked ? null : num(iG.value), cat: sc.value, floating: cf.checked, active: ca.checked } : x);
       saveItems(items, "已儲存");
     });
-    f.append(wn, wc, wu, wp, fl, ac, save);
+    f.append(wn, wc, wu, wp, wg, fl, ac, save);
     return f;
   }
   $("addItemBtn").addEventListener("click", async () => {
@@ -304,8 +312,8 @@
     const cat = $("nCat").value;
     const order = Math.max(0, ...S.items.filter((i) => i.cat === cat).map((i) => i.order || 0)) + 1;
     const floating = $("nFloat").checked;
-    const ok = await saveItems(S.items.concat({ id: "", name, cat, unit: $("nUnit").value.trim() || (floating ? "斤" : "份"), price: floating ? null : num($("nPrice").value), floating, active: true, order }), "已新增：" + name);
-    if (ok) { ["nName", "nUnit", "nPrice"].forEach((id) => { $(id).value = ""; }); $("nFloat").checked = false; }
+    const ok = await saveItems(S.items.concat({ id: "", name, cat, unit: $("nUnit").value.trim() || (floating ? "斤" : "份"), price: floating ? null : num($("nPrice").value), grams: floating ? null : num($("nGrams").value), floating, active: true, order }), "已新增：" + name);
+    if (ok) { ["nName", "nUnit", "nPrice", "nGrams"].forEach((id) => { $(id).value = ""; }); $("nFloat").checked = false; }
   });
 
   /* ---------- render & data ---------- */
